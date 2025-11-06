@@ -1,0 +1,16 @@
+# Python environments
+venv/
+.venv/
+env/
+.env/
+
+# Byte-compiled / temporary files
+__pycache__/
+*.pyc
+
+# IDE files (e.g., VS Code)
+.vscode/
+
+# Add any database files you use for development
+db.sqlite3
+.env
