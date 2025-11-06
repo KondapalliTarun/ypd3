@@ -118,15 +118,15 @@ class PoseSimilarity():
             ideal_angle = detector.calculate_angle(input_joints_dict[i])
 
             angle_diff = abs(user_angle - ideal_angle)
-            normalized_error = max(0, 1 - (angle_diff / thresh))  # within ±tolerance
+            normalized_error = max(0, 1 - (angle_diff / thresh))
             total_score += normalized_error
             valid_joints += 1
 
         if valid_joints == 0:
             return 0.0
 
-        accuracy = (total_score / valid_joints) * 100
-        return round(accuracy, 2)
+        accuracy = (total_score / valid_joints)
+        return round(accuracy, 4)
         
 
 

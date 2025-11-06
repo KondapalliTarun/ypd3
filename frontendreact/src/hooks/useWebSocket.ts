@@ -8,6 +8,7 @@ export function useWebSocket(url: string) {
   });
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const ws = new WebSocket(url);
@@ -25,7 +26,17 @@ export function useWebSocket(url: string) {
       try {
         const data = JSON.parse(event.data);
 
-        if (data.data !== undefined) {
+        if (data.audio_data) {
+          playAudio(data.audio_data);
+        }
+
+        if (data.type === 'init_response') {
+          setResult({
+            status: DetectionStatus.INITIALIZING,
+            message: 'Ready to begin',
+            pose_name: data.pose_name
+          });
+        } else if (data.data !== undefined) {
           let status: DetectionStatus;
           let message: string;
 
@@ -36,23 +47,23 @@ export function useWebSocket(url: string) {
               break;
             case 1:
               status = DetectionStatus.INCORRECT;
-              message = data.message || 'Incorrect pose - adjust your position';
+              message = 'Incorrect pose - adjust your position';
               break;
             case 2:
               status = DetectionStatus.CORRECT;
-              message = data.message || "Perfect! You're doing great!";
+              message = "Perfect! Hold it";
               break;
             case 3:
               status = DetectionStatus.PARTIAL;
-              message = data.message || 'Almost there - minor adjustments needed';
+              message = 'Almost there - adjust as instructed';
               break;
             case 4:
               status = DetectionStatus.NEXT_POSE;
-              message = data.message || 'Moving to next pose';
+              message = 'Moving to next pose';
               break;
             case 5:
               status = DetectionStatus.SEQUENCE_COMPLETE;
-              message = 'Routine completed!';
+              message = 'Completed!';
               break;
             default:
               status = DetectionStatus.NO_POSE;
@@ -63,6 +74,18 @@ export function useWebSocket(url: string) {
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
+      }
+    };
+
+    const playAudio = (base64Audio: string) => {
+      try {
+        if (!audioRef.current) {
+          audioRef.current = new Audio();
+        }
+        audioRef.current.src = `data:audio/mp3;base64,${base64Audio}`;
+        audioRef.current.play().catch(err => console.error('Audio playback error:', err));
+      } catch (error) {
+        console.error('Audio creation error:', error);
       }
     };
 
@@ -82,6 +105,18 @@ export function useWebSocket(url: string) {
     };
   }, [url]);
 
+  const sendInit = (mode: 'single' | 'routine', asanaIds: number[], routineName?: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const message = JSON.stringify({
+        type: 'init',
+        mode,
+        asanaIds,
+        routineName
+      });
+      wsRef.current.send(message);
+    }
+  };
+
   const sendFrame = (imageData: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const message = JSON.stringify({
@@ -91,5 +126,5 @@ export function useWebSocket(url: string) {
     }
   };
 
-  return { result, isConnected, sendFrame };
+  return { result, isConnected, sendFrame, sendInit };
 }

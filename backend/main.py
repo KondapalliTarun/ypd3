@@ -33,10 +33,22 @@ surya_namaskar_sequence = [
     "pranamasana"
 ]
 
+# Mapping from frontend asana IDs to backend pose names
+asana_id_to_name = {
+    1: "pranamasana",
+    2: "hastauttanasana",
+    3: "hastapadasana",
+    4: "right_ashwa_sanchalanasana",
+    5: "dandasana",
+    6: "ashtanga_namaskara",
+    7: "bhujangasana",
+    8: "adho_mukha_svanasana",
+    9: "left_ashwa_sanchalanasana"
+}
+
 # Dictionary to store the state of each client
 client_states = {}
 
-# --- MODIFIED: This function now RETURNS base64 audio data ---
 def text_to_speech_base64(text):
     """Generates TTS audio, encodes it to base64, and returns the string."""
     try:
@@ -44,13 +56,10 @@ def text_to_speech_base64(text):
         mp3_fp = io.BytesIO()
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
-        
-        # Encode the MP3 bytes to base64 for transmission
         audio_base64 = base64.b64encode(mp3_fp.read()).decode('utf-8')
         return audio_base64
     except Exception as e:
         print(f"Error in text_to_speech_base64: {e}")
-        # Return an empty string on error
         return ""
 
 # The original text_to_speech call was inside a thread. 
@@ -67,40 +76,55 @@ async def handler(websocket):
     client_id = id(websocket)
     print(f"Client {client_id} connected.")
     client_states[client_id] = {
+        "mode": None,
+        "asana_sequence": [],
         "current_asana_idx": 0,
         "hold_start_time": None,
         "last_feedback_time": 0,
-        "asana_started": False
+        "initialized": False
     }
 
     try:
         async for message in websocket:
             data = json.loads(message)
-            image_data = data.get("imageData")
-            
-            # Placeholder for audio data to be sent
-            audio_data_b64 = ""
+            state = client_states[client_id]
 
+            # Handle initialization message
+            if data.get("type") == "init":
+                mode = data.get("mode")
+                asana_ids = data.get("asanaIds", [])
+
+                state["mode"] = mode
+                if mode == "single":
+                    state["asana_sequence"] = [asana_id_to_name[asana_ids[0]]]
+                elif mode == "routine":
+                    state["asana_sequence"] = surya_namaskar_sequence
+
+                state["initialized"] = True
+
+                pose_name = state["asana_sequence"][0].replace('_', ' ')
+                if mode == "routine":
+                    audio_text = f"Starting {data.get('routineName', 'routine')}. First pose is {pose_name}"
+                else:
+                    audio_text = f"Practice {pose_name}"
+
+                audio_data = text_to_speech_base64(audio_text)
+                await websocket.send(json.dumps({
+                    "type": "init_response",
+                    "audio_data": audio_data,
+                    "pose_name": pose_name
+                }))
+                continue
+
+            # Handle frame processing
+            image_data = data.get("imageData")
             if not image_data:
                 await websocket.send(json.dumps({"error": "Invalid data"}))
                 continue
 
-            state = client_states[client_id]
-
-            # --- MODIFIED: Initial Asana Start TTS ---
-            if not state["asana_started"]:
-                audio_data_b64 = text_to_speech_base64("Starting Surya Namaskara sequence.")
-                # Send the initial message and audio
-                await websocket.send(json.dumps({"audio_data": audio_data_b64}))
-                
-                # Wait for the first speech to play out (client side)
-                await asyncio.sleep(2) 
-
-                current_pose_name = surya_namaskar_sequence[state['current_asana_idx']].replace('_', ' ')
-                audio_data_b64 = text_to_speech_base64(f"First pose is {current_pose_name}")
-                await websocket.send(json.dumps({"audio_data": audio_data_b64, "pose_name": current_pose_name}))
-                state["asana_started"] = True
-                continue # Skip processing the first frame until the client is ready
+            if not state["initialized"]:
+                await websocket.send(json.dumps({"error": "Session not initialized"}))
+                continue
 
             # Decode the base64 image
             try:
@@ -119,7 +143,7 @@ async def handler(websocket):
             frame_with_pose = detector.findPose(frame)
             landmarks = detector.findPosition(frame_with_pose)
 
-            pose_name = surya_namaskar_sequence[state['current_asana_idx']]
+            pose_name = state["asana_sequence"][state['current_asana_idx']]
 
             if not landmarks:
                 # Send a message with placeholder audio
@@ -134,62 +158,71 @@ async def handler(websocket):
             is_similar, correct_landmarks = pose_similarity.isSimilar(pose_name, normalized_landmarks, 0.3)
 
             current_time = time.time()
-            if current_time - state["last_feedback_time"] > 5: # Cooldown for feedback
-                state["last_feedback_time"] = current_time
-                
-                # --- MODIFIED: Logic for generating TTS and including in response ---
-                response_data = {}
-                
-                if is_similar:
-                    accuracy = pose_similarity.accuracy(pose_name, normalized_landmarks, 30)
-                    wrong_joints = pose_similarity.get_wrong_joints(pose_name, correct_landmarks, normalized_landmarks, 45)
+            should_give_feedback = current_time - state["last_feedback_time"] > 5
 
-                    if not wrong_joints:
-                        if state["hold_start_time"] is None:
-                            state["hold_start_time"] = time.time()
-                        
-                        elapsed = time.time() - state["hold_start_time"]
-                        if elapsed >= 3: # Hold time
+            response_data = {}
+            audio_data_b64 = ""
+
+            if is_similar:
+                accuracy = pose_similarity.accuracy(pose_name, normalized_landmarks, 30)
+                wrong_joints = pose_similarity.get_wrong_joints(pose_name, correct_landmarks, normalized_landmarks, 45)
+
+                if not wrong_joints:
+                    if state["hold_start_time"] is None:
+                        state["hold_start_time"] = time.time()
+
+                    elapsed = time.time() - state["hold_start_time"]
+                    if elapsed >= 3:
+                        if should_give_feedback:
                             text = f"{pose_name.replace('_', ' ')} complete."
                             audio_data_b64 = text_to_speech_base64(text)
-                            
-                            state["current_asana_idx"] += 1
-                            state["hold_start_time"] = None
-                            
-                            if state["current_asana_idx"] < len(surya_namaskar_sequence):
-                                next_asana = surya_namaskar_sequence[state['current_asana_idx']].replace('_', ' ')
+                            state["last_feedback_time"] = current_time
+
+                        state["current_asana_idx"] += 1
+                        state["hold_start_time"] = None
+
+                        if state["mode"] == "single":
+                            if should_give_feedback:
+                                audio_data_b64 = text_to_speech_base64("Great job! You completed the pose.")
+                            response_data = {"data": 5, "audio_data": audio_data_b64}
+                        elif state["current_asana_idx"] < len(state["asana_sequence"]):
+                            next_asana = state["asana_sequence"][state['current_asana_idx']].replace('_', ' ')
+                            if should_give_feedback:
                                 text = f"Next pose is {next_asana}"
-                                # Generate a second audio for the next step, or just use the first one
-                                audio_data_b64 += text_to_speech_base64(text) 
-                                response_data = {"data": 4, "pose_name": next_asana} # 4 for next pose
-                            else:
-                                text = "Surya Namaskara complete. Well done."
                                 audio_data_b64 = text_to_speech_base64(text)
-                                response_data = {"data": 5} # 5 for sequence complete
+                            response_data = {"data": 4, "pose_name": next_asana, "audio_data": audio_data_b64}
                         else:
+                            if should_give_feedback:
+                                audio_data_b64 = text_to_speech_base64("Routine complete. Well done.")
+                            response_data = {"data": 5, "audio_data": audio_data_b64}
+                    else:
+                        if should_give_feedback:
                             text = "Perfect pose! Hold it."
                             audio_data_b64 = text_to_speech_base64(text)
-                            response_data = {"data": 2, "confidence": accuracy / 100, "pose_name": pose_name}
-                    else:
-                        state["hold_start_time"] = None
+                            state["last_feedback_time"] = current_time
+                        response_data = {"data": 2, "confidence": accuracy, "pose_name": pose_name, "audio_data": audio_data_b64}
+                else:
+                    state["hold_start_time"] = None
+                    if should_give_feedback:
                         feedback_parts = []
-                        for joint_key in wrong_joints:
+                        for joint_key in list(wrong_joints.keys())[:2]:
                             joint_name = wrong_joints[joint_key][0]
                             change = wrong_joints[joint_key][1]
                             feedback_parts.append(f"{change} angle at {joint_name.replace('_', ' ')}")
 
-                        feedback_text = ". ".join(feedback_parts[:2])
+                        feedback_text = ". ".join(feedback_parts)
                         audio_data_b64 = text_to_speech_base64(feedback_text)
-                        response_data = {"data": 3, "confidence": accuracy / 100, "pose_name": pose_name}
-                else:
-                    state["hold_start_time"] = None
+                        state["last_feedback_time"] = current_time
+                    response_data = {"data": 3, "confidence": accuracy, "pose_name": pose_name, "audio_data": audio_data_b64}
+            else:
+                state["hold_start_time"] = None
+                if should_give_feedback:
                     text = "Adjust your position."
                     audio_data_b64 = text_to_speech_base64(text)
-                    response_data = {"data": 1, "confidence": 0, "pose_name": pose_name}
-                    
-                # Final send with audio data
-                response_data["audio_data"] = audio_data_b64
-                await websocket.send(json.dumps(response_data))
+                    state["last_feedback_time"] = current_time
+                response_data = {"data": 1, "confidence": 0, "pose_name": pose_name, "audio_data": audio_data_b64}
+
+            await websocket.send(json.dumps(response_data))
 
     except websockets.exceptions.ConnectionClosed:
         print(f"Client {client_id} disconnected.")

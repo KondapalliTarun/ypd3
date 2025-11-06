@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, SwitchCamera, ChevronRight, Check } from 'lucide-react';
+import { X, SwitchCamera, Check } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { useCamera } from '../hooks/useCamera';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -10,31 +10,41 @@ interface CameraViewProps {
 }
 
 export function CameraView({ onExit }: CameraViewProps) {
-  const { selectedRoutine, isFullRoutine } = useApp();
+  const { selectedRoutine, selectedAsana, isFullRoutine } = useApp();
   const { videoRef, isReady, error, toggleCamera, captureFrame } = useCamera();
-  const { result, sendFrame } = useWebSocket('ws://localhost:8765');
+  const { result, sendFrame, sendInit, isConnected } = useWebSocket('ws://localhost:8765');
 
   const [currentPoseName, setCurrentPoseName] = useState('');
+  const [sessionInitialized, setSessionInitialized] = useState(false);
+
+  useEffect(() => {
+    if (isConnected && !sessionInitialized && selectedRoutine) {
+      const mode = isFullRoutine ? 'routine' : 'single';
+      const asanaIds = isFullRoutine
+        ? selectedRoutine.asanas.map(a => a.id)
+        : selectedAsana ? [selectedAsana.id] : [selectedRoutine.asanas[0].id];
+      const routineName = isFullRoutine ? selectedRoutine.name : undefined;
+
+      sendInit(mode, asanaIds, routineName);
+      setSessionInitialized(true);
+    }
+  }, [isConnected, sessionInitialized, selectedRoutine, selectedAsana, isFullRoutine, sendInit]);
 
   useEffect(() => {
     if (result.pose_name) {
       setCurrentPoseName(result.pose_name);
     }
 
-    if (result.status === DetectionStatus.NEXT_POSE) {
-      // The backend will send the next pose name, so we just need to update the UI
-    }
-
     if (result.status === DetectionStatus.SEQUENCE_COMPLETE) {
       setTimeout(() => {
-        alert('Congratulations! Routine completed!');
+        alert('Congratulations! Practice completed!');
         onExit();
-      }, 1000);
+      }, 2000);
     }
   }, [result, onExit]);
 
   useEffect(() => {
-    if (!isReady) return;
+    if (!isReady || !sessionInitialized) return;
 
     const interval = setInterval(() => {
       const frameData = captureFrame();
@@ -44,7 +54,7 @@ export function CameraView({ onExit }: CameraViewProps) {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [isReady, sendFrame, captureFrame]);
+  }, [isReady, sessionInitialized, sendFrame, captureFrame]);
 
   const statusColors = {
     [DetectionStatus.INITIALIZING]: 'bg-slate-600',
@@ -56,9 +66,14 @@ export function CameraView({ onExit }: CameraViewProps) {
     [DetectionStatus.SEQUENCE_COMPLETE]: 'bg-green-600',
   };
 
-  const statusIcons = {
+  const statusIcons: Record<DetectionStatus, JSX.Element | null> = {
+    [DetectionStatus.INITIALIZING]: null,
+    [DetectionStatus.NO_POSE]: null,
+    [DetectionStatus.INCORRECT]: null,
     [DetectionStatus.CORRECT]: <Check className="w-6 h-6" />,
-    [DetectionStatus.PARTIAL]: <Check className="w-6 h-6 opacity-50" />
+    [DetectionStatus.PARTIAL]: <Check className="w-6 h-6 opacity-50" />,
+    [DetectionStatus.NEXT_POSE]: null,
+    [DetectionStatus.SEQUENCE_COMPLETE]: <Check className="w-6 h-6" />
   };
 
   return (
@@ -85,7 +100,7 @@ export function CameraView({ onExit }: CameraViewProps) {
           <div className="flex-1 mx-4">
             <div className="bg-white/10 backdrop-blur-md rounded-full px-4 py-2">
               <h2 className="text-white font-bold text-center truncate">
-                {currentPoseName}
+                {currentPoseName || (selectedAsana?.name || selectedRoutine?.asanas[0]?.name || 'Loading...')}
               </h2>
             </div>
           </div>
